@@ -1,0 +1,51 @@
+﻿<#@ output extension=".cs" #>
+namespace Lua;
+partial class LuaConstants
+{
+    public const int TNil = <#=TNil#>;
+    public const int TBoolean = <#=TBoolean#>;
+    public const int TLightUserData = <#=TLightUserData#>;
+    public const int TNumber = <#=TNumber#>;
+    public const int TString = <#=TString#>;
+    public const int TTable = <#=TTable#>;
+    public const int TFunction = <#=TFunction#>;
+    public const int TUserData = <#=TUserData#>;
+    public const int TThread = <#=TThread#>;
+    public const int NumTypes = <#=NumTypes#>;
+
+    /* Standard nil */
+    public const int VNIL = <#=MakeVariant(TNil, 0)#>;
+
+    /* Booleans*/
+    public const int VFALSE = <#=MakeVariant(TBoolean, 0)#>;
+    public const int VTRUE = <#=MakeVariant(TBoolean, 1)#>;
+
+    /* Threads */
+    public const int VTHREAD = <#=MakeVariant(TThread, 0)#>;
+
+    /* Variant tags for numbers */
+    public const int VNUMINT = <#=MakeVariant(TNumber, 0)#>; /* integer numbers */
+    public const int VNUMFLT = <#=MakeVariant(TNumber, 1)#>; /* float numbers */
+
+    /* Variant tags for strings */
+    public const int VSHRSTR = <#=MakeVariant(TString, 0)#>; /* short strings */
+    public const int VLNGSTR = <#=MakeVariant(TString, 1)#>; /* long strings */
+
+    /* Tables*/
+    public const int VTABLE = <#=MakeVariant(TTable, 0)#>; 
+}
+
+<#+ 
+// Helper variant maker and constant definitions
+static int MakeVariant(int t, int v) => (t | (v << 4)); 
+const int TNil = 0;
+const int TBoolean = 1;
+const int TLightUserData = 2;
+const int TNumber = 3;
+const int TString = 4;
+const int TTable = 5;
+const int TFunction = 6;
+const int TUserData = 7;
+const int TThread = 8;
+const int NumTypes = 9;
+#>

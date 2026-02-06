@@ -1,0 +1,697 @@
+<#@ output extension=".cs" #>
+<#@ import namespace="System.Linq" #>
+using Lua.Internal;
+using System.Diagnostics;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+namespace Lua.Runtime;
+partial class LuaVM
+{
+    partial struct ExecutionContext
+    {
+        //see luaV_execute
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
+        public void DoExecute()
+        {
+            ref Instruction pc = ref proto.Code[ci.savedpc];
+            int baseCIndex = callStack.Count;
+            ref LuaValue sbase = ref this.sbase;
+
+            while (true)
+            {
+                uint instruction = pc.Value;
+                pc = ref Unsafe.Add(ref pc, 1);
+                OpCode opCode = <#=INST_OPCODE#>;
+                switch(opCode)
+                {
+<#
+foreach(var opInfo in opInfos)
+{
+#>
+                    case OpCode.<#=opInfo.Code#>: {
+<#PushIndent("            ");#>
+<#opInfo.GenFunc();#>
+<#PopIndent();#>
+                    } break;
+<#
+}
+#>
+                    default: {
+                        throw new NotImplementedException($"OpCode {opCode} is not implemented.");
+                    }
+                }
+            }
+        }
+    }
+}
+<#@ include file="../t4def.tt" #>
+<#+ 
+enum FetchMode
+{
+    A, B, C, K, Bx, sBx, sJ, sC, //instruction fields
+    rA, rB, rC, //registers
+    kB, kC, //K[B/C]
+    uA, uB, //upvals[A/B]
+    rkC  //if k(i) then K[C] else R[C]
+}
+
+string CodeRef(string name) => $"ref MemoryMarshal.GetArrayDataReference({name}.Code)";
+
+void FetchOperand(params FetchMode[] modes)
+{
+    foreach(var mode in modes)
+    {
+        switch(mode)
+        {
+        case FetchMode.A:
+            DoWrite($"int A = {INST_A};");
+            break;
+        case FetchMode.B:
+            DoWrite($"int B = {INST_B};");
+            break;
+        case FetchMode.C:
+            DoWrite($"int C = {INST_C};");
+            break;
+        case FetchMode.K:
+            DoWrite($"bool K = {INST_K};");
+            break;
+        case FetchMode.Bx:
+            DoWrite($"int Bx = {INST_Bx};");
+            break;
+        case FetchMode.sBx:
+            DoWrite($"int sBx = {INST_SBx};");
+            break;
+        case FetchMode.sJ:
+            DoWrite($"int sJ = {INST_SJ};");
+            break;
+        case FetchMode.sC:
+            DoWrite($"int sC = {INST_SC};");
+            break;
+        case FetchMode.rA:
+            DoWrite($"ref LuaValue rA = ref Unsafe.Add(ref sbase, {INST_A});");
+            break;
+        case FetchMode.rB:
+            DoWrite($"ref LuaValue rB = ref Unsafe.Add(ref sbase, {INST_B});");
+            break;
+        case FetchMode.rC:
+            DoWrite($"ref LuaValue rC = ref Unsafe.Add(ref sbase, {INST_C});");
+            break;
+        case FetchMode.kB:
+            DoWrite($"ref LuaValue kB = ref Unsafe.Add(ref kbase, {INST_B});");
+            break;
+        case FetchMode.kC:
+            DoWrite($"ref LuaValue kC = ref Unsafe.Add(ref kbase, {INST_C});");
+            break;
+        case FetchMode.uA:
+            DoWrite($"ref LuaValue uA = ref Unsafe.Add(ref ubase, {INST_A}).GetRefValue();");
+            break;
+        case FetchMode.uB:
+            DoWrite($"ref LuaValue uB = ref Unsafe.Add(ref ubase, {INST_B}).GetRefValue();");
+            break;
+        case FetchMode.rkC:
+            DoWrite($"""
+            ref LuaValue rkC = ref {INST_K} ? ref Unsafe.Add(ref kbase, {INST_C}) : ref Unsafe.Add(ref sbase, {INST_C});
+            """);
+            break;
+        default:
+            throw new NotImplementedException($"OpMode {mode} is not implemented.");
+        }
+    }
+}
+
+void Gen_IncPC() => DoWrite("pc = ref Unsafe.Add(ref pc, 1);");
+
+void Gen_Move()
+{
+    FetchOperand(FetchMode.rA, FetchMode.rB);
+    DoWrite("""
+    if (rB.rvalue == null)
+    {
+        rA.type = rB.type;
+        rA.ivalue = rB.ivalue;
+        rA.rvalue = null;
+    }
+    else
+    {
+        rA = rB;
+    }
+    """);
+}
+
+void Gen_LoadI()
+{
+    FetchOperand(FetchMode.rA, FetchMode.sBx);
+    DoWrite("rA.Set(sBx);");
+}
+
+void Gen_LoadF()
+{
+    FetchOperand(FetchMode.rA, FetchMode.sBx);
+    DoWrite("rA.Set((double)sBx);");
+}
+
+void Gen_LoadK()
+{
+    FetchOperand(FetchMode.rA, FetchMode.Bx);
+    DoWrite("rA = Unsafe.Add(ref kbase, Bx);");
+}
+
+void Gen_LoadKx()
+{
+    FetchOperand(FetchMode.rA);    
+    DoWrite("rA = Unsafe.Add(ref kbase, pc.Ax);");
+    Gen_IncPC();
+}
+
+void Gen_LoadFalse()
+{
+    FetchOperand(FetchMode.rA);
+    DoWrite("rA = new LuaValue(false);");
+}
+
+void Gen_LoadTrue()
+{
+    FetchOperand(FetchMode.rA);
+    DoWrite("rA = new LuaValue(true);");
+}
+
+void Gen_LFalseSkip()
+{
+    Gen_LoadFalse();
+    Gen_IncPC();
+}
+
+void Gen_LoadNil()
+{
+    FetchOperand(FetchMode.A, FetchMode.B);
+    DoWrite("MemoryMarshal.CreateSpan(ref Unsafe.Add(ref sbase, A) , B+1).Clear();");
+}
+
+void Gen_GetUpVal()
+{
+    FetchOperand(FetchMode.rA, FetchMode.uB);
+    DoWrite("rA = uB;");
+}
+
+void Gen_SetUpVal()
+{
+    FetchOperand(FetchMode.rA, FetchMode.uB);
+    DoWrite("uB = rA;");
+}
+
+void Gen_GetTabUp()
+{
+    FetchOperand(FetchMode.rA, FetchMode.uB, FetchMode.kC);
+    DoWrite("""
+    string key = kC.UnsafeAsString();
+    rA = FastGet(uB, key);
+    """);
+}
+
+void Gen_GetTable()
+{
+    FetchOperand(FetchMode.rA, FetchMode.rB, FetchMode.rC);
+    DoWrite($$"""
+    if (!{{R_IS_TABLE("rB")}})
+    {
+        throw new Exception($"Expected table at R[B], but got {rB.Type}.");
+    }
+    else
+    {
+        DoGetTable({{R_AS_TABLE("rB")}}, in rC, ref rA);
+    }
+    """);
+}
+
+void Gen_GetI()
+{
+    FetchOperand(FetchMode.rA, FetchMode.rB, FetchMode.C);
+    DoWrite("rA = FastGet(rB, C);");
+}
+
+void Gen_GetField()
+{
+    FetchOperand(FetchMode.rA, FetchMode.rB, FetchMode.kC);
+    DoWrite("""
+    string key = kC.UnsafeAsString();
+    rA = FastGet(rB, key);
+    """);
+}
+
+void Gen_NewTable()
+{
+    FetchOperand(FetchMode.rA, FetchMode.B, FetchMode.C, FetchMode.K); /* B: log2(hash size) + 1, C: array size */
+    DoWrite("""
+    if(B > 0) B = 1 << (B-1);
+    if(K) C += pc.Ax * (Instruction.MAXARG_C + 1);  /* add it to size */
+    pc = ref Unsafe.Add(ref pc, 1); //skip next instruction
+    rA = new LuaTable(B, C);
+    """);
+}
+
+void Gen_SetTabUp()
+{
+    FetchOperand(FetchMode.uA, FetchMode.kB, FetchMode.rkC);
+    DoWrite("""
+    string key = kB.UnsafeAsString();
+    FastSet(uA, key, rkC);
+    """);
+}
+
+void Gen_Closure()
+{
+    FetchOperand(FetchMode.rA, FetchMode.Bx);
+    DoWrite("""
+    Proto p = proto.P[Bx];
+    rA = new LuaClosure(thread, p);
+    """);
+}
+
+void Gen_Call()
+{
+    FetchOperand(FetchMode.A, FetchMode.B, FetchMode.C);
+    DoWrite($$"""
+    //A B C	R[A], ... ,R[A+C-2] := R[A](R[A+1], ... ,R[A+B-1])
+    ref LuaValue rA = ref Unsafe.Add(ref sbase, A);
+    if (rA.IsCFunction)
+    {
+        CallCFunction(ref rA, A, B, C);
+        sbase = ref this.sbase;
+    }
+    else
+    {
+        ref var ci1 = ref PushAndRefCI();
+        LuaClosure closure = rA.AsLuaClosure();
+        Proto proto = closure.Proto;
+        //save pc
+        ci.savedpc = (int)(Unsafe.ByteOffset({{CodeRef("this.proto")}}, ref pc) / Unsafe.SizeOf<Instruction>());
+        //new ci
+        int func = ci.func + A + 1;
+        ci1.func = func;
+        ci1.top = func + proto.MaxStackSize + 1;
+        ci1.nresults = C - 1; //wanted results, set top=last_result+1 when C=0
+        ci1.nextraargs = 0; //defer to vararg prep
+        ci1.savedpc = 0; //reset PC
+        //stack
+        if (B == 0)
+        {
+            int n = stackTop - ci.func - 1 - A;
+            int gap = proto.NumParams - n;
+            if (gap > 0)
+            {
+                if(StackReserveMore(gap))
+                {
+                    sbase = ref this.sbase;
+                    rA = ref Unsafe.Add(ref sbase, A);
+                }
+                MemoryMarshal.CreateSpan(ref Unsafe.Add(ref sbase, stackTop), gap).Clear();
+                stackTop += gap;
+            }
+        }
+        else
+        { //B>0
+            int n = B - 1;
+            int gap = proto.NumParams - n;
+            if (gap > 0)
+            {
+                if(StackReserveMore(gap))
+                {
+                    sbase = ref this.sbase;
+                    rA = ref Unsafe.Add(ref sbase, A);
+                }
+                MemoryMarshal.CreateSpan(ref Unsafe.Add(ref rA, B), gap).Clear();
+                B += gap;
+            }
+            stackTop = func + B;
+        }
+        ci = ref ci1;
+        //pc
+        pc = {{CodeRef("proto")}};
+        stack.EnsureCapacity(ci.top);
+        UpdateCurFunc();
+        sbase = ref this.sbase;
+    }
+    """);
+}
+
+void Gen_Return()
+{
+    FetchOperand(FetchMode.A, FetchMode.B, FetchMode.C, FetchMode.K);
+    DoWrite("""
+    //A B C k	return R[A], ... ,R[A+B-2],
+    //if (B == 0) then return up to 'top'
+    //C > 0 means the function is vararg, so that its 'func' must be corrected before returning; in this case, (C - 1) is its number of fixed parameters.
+    int nres;
+    if (B > 0) //B == 0 means return all results
+    {
+        stackTop = ci.func + A + B;
+        nres = B - 1;
+    }
+    else
+    {
+        nres = stackTop - (ci.func + A + 1);
+    }
+    if (K) //build up values
+    {
+        throw new NotImplementedException();
+    }
+    if (C > 0)
+    {
+        ci.func -= ci.nextraargs + C;
+    }
+    """);
+    Gen_Ret("nres");
+}
+
+void Gen_Ret(string res)
+{
+    DoWrite($$"""
+    int wanted = ci.nresults;
+    MoveResults(ci.func, {{res}}, wanted);
+    ref var prevCI = ref Unsafe.Subtract(ref ci, 1);
+    callStack.Pop();
+    ci = ref prevCI;
+    if (callStack.Count >= baseCIndex)
+    {
+        UpdateCurFunc();
+        pc = ref proto.Code[ci.savedpc];
+        sbase = ref this.sbase;
+    }
+    else
+        return; //return to caller
+    """);
+}
+
+void Gen_Return0()
+{
+    Gen_Ret("0");
+}
+
+void Gen_Return1()
+{
+    FetchOperand(FetchMode.A);
+    DoWrite("stackTop = ci.func + A + 2;");
+    Gen_Ret("1");
+}
+
+void Gen_VarArgPrep()
+{
+    FetchOperand(FetchMode.A);
+    DoWrite("""
+    AdjustVarArgs(A, ref ci, proto);
+    sbase = ref this.sbase;
+    """);
+}
+
+void Gen_Jmp()
+{
+    FetchOperand(FetchMode.sJ);
+    DoWrite("pc = ref Unsafe.Add(ref pc, sJ);");
+}
+
+void Gen_ArithCmp(string op)
+{
+    FetchOperand(FetchMode.rA, FetchMode.rB, FetchMode.K);
+    DoWrite($$"""
+    if ({{R_IS_INT("rA")}} && {{R_IS_INT("rB")}})
+    {
+        long a = {{R_AS_INT("rA")}};
+        long b = {{R_AS_INT("rB")}};
+        if ((a {{op}} b) != K)
+            pc = ref Unsafe.Add(ref pc, 1); //skip next instruction
+    }
+    else if ({{R_IS_FLOAT("rA")}} && {{R_IS_FLOAT("rB")}})
+    {
+        double a = {{R_AS_FLOAT("rA")}};
+        double b = {{R_AS_FLOAT("rB")}};
+        if ((a {{op}} b) != K)
+            pc = ref Unsafe.Add(ref pc, 1); //skip next instruction
+    }
+    else if (rA.IsNumber && rB.IsNumber)
+    {
+        double a = rA.IsFloat ? {{R_AS_FLOAT("rA")}} : (double){{R_AS_INT("rA")}};
+        double b = rB.IsFloat ? {{R_AS_FLOAT("rB")}} : (double){{R_AS_INT("rB")}};
+        if ((a {{op}} b) != K)
+            pc = ref Unsafe.Add(ref pc, 1); //skip next instruction
+    } else
+        throw new NotImplementedException($"Arith {{op}} not implemented for {rA.Type} and {rB.Type}.");
+    """);
+}
+
+void Gen_ArithAssign(string op)
+{
+    FetchOperand(FetchMode.rA, FetchMode.rB, FetchMode.rC);
+    DoWrite($$"""
+    if ({{R_IS_INT("rB")}} && {{R_IS_INT("rC")}})
+    {
+        long b = {{R_AS_INT("rB")}};
+        long c = {{R_AS_INT("rC")}};
+        rA.Set(b {{op}} c);
+        pc = ref Unsafe.Add(ref pc, 1); //skip next instruction
+    }
+    else if ({{R_IS_FLOAT("rB")}} && {{R_IS_FLOAT("rC")}})
+    {
+        double b = {{R_AS_FLOAT("rB")}};
+        double c = {{R_AS_FLOAT("rC")}};
+        rA.Set(b {{op}} c);
+        pc = ref Unsafe.Add(ref pc, 1); //skip next instruction
+    }
+    else if (rB.IsNumber && rC.IsNumber)
+    {
+        double b = rB.IsFloat ? {{R_AS_FLOAT("rB")}} : (double){{R_AS_INT("rB")}};
+        double c = rC.IsFloat ? {{R_AS_FLOAT("rC")}} : (double){{R_AS_INT("rC")}};
+        rA.Set(b {{op}} c);
+        pc = ref Unsafe.Add(ref pc, 1); //skip next instruction
+    } else
+        throw new NotImplementedException($"Arith {{op}} not implemented for {rA.Type} and {rB.Type}.");
+    """);
+}
+
+void Gen_Eq() => Gen_ArithCmp("==");
+
+void Gen_Lt() => Gen_ArithCmp("<");
+
+void Gen_Le() => Gen_ArithCmp("<=");
+
+void Gen_Add() => Gen_ArithAssign("+");
+
+void Gen_Sub() => Gen_ArithAssign("-");
+
+void Gen_Concat()
+{
+    FetchOperand(FetchMode.rA, FetchMode.B);
+    DoWrite("""
+    //A B	R[A] := R[A].. ... ..R[A + B - 1]
+    if (B == 0)
+    {
+        rA = "";
+    }else if(B > 1)
+    {
+        StringBuilder sb = new StringBuilder(rA.ToString());
+        for (int i = 1; i < B; i++)
+            sb.Append(Unsafe.Add(ref rA, i));
+        rA = sb.ToString();
+    }
+    """);    
+}
+
+void Gen_ForPrep()
+{
+    FetchOperand(FetchMode.rA);
+    DoWrite($"""
+    if(ForPrep(ref rA))
+        pc = ref Unsafe.Add(ref pc, {INST_Bx} + 1);
+    """);
+}
+
+void Gen_ForLoop()
+{
+    FetchOperand(FetchMode.rA);
+    DoWrite($$"""
+    ref LuaValue pcount = ref Unsafe.Add(ref rA, 1);
+    ref LuaValue pstep = ref Unsafe.Add(ref rA, 2);
+    ref LuaValue pctrl = ref Unsafe.Add(ref rA, 3);
+    if ({{R_IS_INT("pstep")}}) //all integer or all float
+    {
+        ulong count = (ulong){{R_AS_INT("pcount")}};
+        if (count > 0)
+        {
+            long step = {{R_AS_INT("pstep")}};
+            long idx = {{R_AS_INT("rA")}};
+            pcount.ivalue = (long)(count - 1);
+            idx = idx + step;
+            rA.ivalue = idx;
+            pctrl.ivalue = idx;
+            pc = ref Unsafe.Subtract(ref pc, {{INST_Bx}});
+        }
+    }
+    """);
+}
+
+void Gen_Len()
+{
+    FetchOperand(FetchMode.rA, FetchMode.rB);
+    DoWrite("rA.Set(GetObjLen(rB));");
+}
+
+void Gen_SetI()
+{
+    FetchOperand(FetchMode.rA, FetchMode.B, FetchMode.rkC);
+    DoWrite($$"""
+    if(!{{R_IS_TABLE("rA")}})
+    {
+        throw new Exception($"Expected table at R[A], but got {rA.Type}.");
+    }
+    else
+        DoSetTable({{R_AS_TABLE("rA")}}, B, in rkC);
+    """);
+}
+
+void Gen_SetList()
+{
+    FetchOperand(FetchMode.A, FetchMode.B, FetchMode.C);
+    DoWrite($$"""
+    ref LuaValue rA = ref Unsafe.Add(ref sbase, A);
+    if (B == 0)
+    {
+        B = stackTop - ci.func - 2 - A;
+        Debug.Assert(B > 0);
+    }
+    if ({{INST_K}})
+    {
+        throw new NotImplementedException("SetList with K flag is not implemented.");
+    }
+    if (!{{R_IS_TABLE("rA")}})
+        throw new Exception($"Expected table at R[{A}], but got {rA.Type}.");
+    LuaTable table = {{R_AS_TABLE("rA")}};
+    for (int i = 1; i <= B; i++)
+    {
+        DoSetTable(table, C + i, in Unsafe.Add(ref rA, i));
+    }
+    """);
+}
+
+void Gen_SetTable()
+{
+    FetchOperand(FetchMode.rA, FetchMode.rB, FetchMode.rkC);
+    DoWrite($$"""
+    //A B C	R[A][R[B]] := RK(C)
+    if (!{{R_IS_TABLE("rA")}})
+    {
+        throw new Exception($"Expected table at R[A], but got {rA.Type}.");
+    }
+    else
+    {
+        DoSetTable({{R_AS_TABLE("rA")}}, in rB, in rkC);
+    }
+    """);
+}
+
+void Gen_Test()
+{
+    FetchOperand(FetchMode.rA, FetchMode.K);
+    DoWrite("""
+    //A k	if (not R[A] == k) then pc++
+    bool isFalse = rA.IsNil || (rA.IsBool && !rA.bvalue);
+    if(isFalse == K)
+    {
+        pc = ref Unsafe.Add(ref pc, 1); //skip next instruction
+    }
+    """);
+}
+
+void Gen_AddI()
+{
+    FetchOperand(FetchMode.rA, FetchMode.rB, FetchMode.sC);
+    DoWrite($$"""
+    //R[A] := R[B] + sC
+    if ({{R_IS_INT("rB")}})
+    {
+        long b = {{R_AS_INT("rB")}};
+        rA.Set(b + sC);
+        pc = ref Unsafe.Add(ref pc, 1); //skip next instruction
+    }
+    else if ({{R_IS_FLOAT("rB")}})
+    {
+        double b = {{R_AS_FLOAT("rB")}};
+        rA.Set(b + sC);
+        pc = ref Unsafe.Add(ref pc, 1); //skip next instruction
+    }
+    else
+    {
+        throw new NotImplementedException($"AddI not implemented for {rB.Type}.");
+    }
+    """);
+}
+
+void Gen_EqK()
+{
+    FetchOperand(FetchMode.rA, FetchMode.rB, FetchMode.K);
+    DoWrite($$"""
+    //A B k	if ((R[A] == K[B]) ~= k) then pc++
+    if (Compare(in rA, in rB) != K)
+    {
+        pc = ref Unsafe.Add(ref pc, 1); //skip next instruction
+    }
+    """);
+}
+
+void DoWrite(string content)
+{
+    foreach(var line in content.Split('\n').Select(line => line.TrimEnd())
+           .Where(line => !string.IsNullOrEmpty(line)))
+    {
+        WriteLine(CurrentIndent + line);
+    }
+}
+
+record class OpInfo(OpCode Code, Action GenFunc);
+
+OpInfo[] opInfos = [];
+
+public GeneratedTextTransformation()
+{
+    opInfos = new []{
+        new OpInfo(OpCode.Move, Gen_Move),
+        new OpInfo(OpCode.LoadI, Gen_LoadI),
+        new OpInfo(OpCode.LoadF, Gen_LoadF),
+        new OpInfo(OpCode.LoadK, Gen_LoadK),
+        new OpInfo(OpCode.LoadKx, Gen_LoadKx),
+        new OpInfo(OpCode.LoadFalse, Gen_LoadFalse),
+        new OpInfo(OpCode.LFalseSkip, Gen_LFalseSkip),
+        new OpInfo(OpCode.LoadTrue, Gen_LoadTrue),
+        new OpInfo(OpCode.LoadNil, Gen_LoadNil),
+        new OpInfo(OpCode.GetUpVal, Gen_GetUpVal),
+        new OpInfo(OpCode.SetUpVal, Gen_SetUpVal),
+        new OpInfo(OpCode.GetTabUp, Gen_GetTabUp),
+        new OpInfo(OpCode.GetTable, Gen_GetTable),
+        new OpInfo(OpCode.GetI, Gen_GetI),
+        new OpInfo(OpCode.NewTable, Gen_NewTable),
+        new OpInfo(OpCode.GetField, Gen_GetField),
+        new OpInfo(OpCode.SetTabUp, Gen_SetTabUp),
+        new OpInfo(OpCode.Closure, Gen_Closure),
+        new OpInfo(OpCode.Call, Gen_Call),
+        new OpInfo(OpCode.VarArgPrep, Gen_VarArgPrep),
+        new OpInfo(OpCode.Return, Gen_Return),
+        new OpInfo(OpCode.Return0, Gen_Return0),
+        new OpInfo(OpCode.Return1, Gen_Return1),
+        new OpInfo(OpCode.Jmp, Gen_Jmp),
+        new OpInfo(OpCode.Eq, Gen_Eq),
+        new OpInfo(OpCode.Lt, Gen_Lt),
+        new OpInfo(OpCode.Le, Gen_Le),
+        new OpInfo(OpCode.Concat, Gen_Concat),
+        new OpInfo(OpCode.ForPrep, Gen_ForPrep),
+        new OpInfo(OpCode.ForLoop, Gen_ForLoop),
+        new OpInfo(OpCode.Len, Gen_Len),
+        new OpInfo(OpCode.SetI, Gen_SetI),
+        new OpInfo(OpCode.SetList, Gen_SetList),
+        new OpInfo(OpCode.SetTable, Gen_SetTable),
+        new OpInfo(OpCode.Test, Gen_Test),
+        new OpInfo(OpCode.AddI, Gen_AddI),
+        new OpInfo(OpCode.Add, Gen_Add),
+        new OpInfo(OpCode.Sub, Gen_Sub),
+        new OpInfo(OpCode.EqK, Gen_EqK),
+    };
+}
+#>

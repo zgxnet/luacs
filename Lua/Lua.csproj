@@ -1,0 +1,28 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>Lua</AssemblyName>
+    <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="Internal\LuaDebug.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="LuaConstants.g.tt">
+      <Generator></Generator>
+    </None>
+  </ItemGroup>
+
+	<!-- 添加 native DLL 引用 -->
+	<ItemGroup>
+		<Content Include="../lua-5.4.8/build/Debug/luac1.dll">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</Content>
+	</ItemGroup>
+
+</Project>
